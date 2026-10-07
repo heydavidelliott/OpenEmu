@@ -82,6 +82,13 @@ final class PrefControlsController: NSViewController {
     private var readingEvent: OEHIDEvent?
     private var ignoredEvents = Set<IgnoredEvent>()
     private var eventMonitor: Any?
+    /// Analog sticks overshoot past center when released, which would otherwise
+    /// bind the overshoot to the next key. Axis events are ignored until then.
+    private var axisSettleDeadline: TimeInterval = 0
+    private static let axisSettleDuration: TimeInterval = 0.3
+    /// How far a stick must be pushed to be bound, so that a stick resting
+    /// slightly off center can't bind itself.
+    private static let axisBindingThreshold: CGFloat = 0.5
     
     var currentSystemController: OESystemController? {
         return selectedPlugin?.controller
@@ -605,6 +612,9 @@ final class PrefControlsController: NSViewController {
         // in either case, this event shouldn't be registered.
         if readingEvent?.isUsageEqual(to: event) ?? false {
             if event.hasOffState {
+                if event.type == .axis {
+                    axisSettleDeadline = ProcessInfo.processInfo.systemUptime + Self.axisSettleDuration
+                }
                 readingEvent = nil
             }
             
@@ -640,6 +650,18 @@ final class PrefControlsController: NSViewController {
         if readingEvent == nil {
             // The event is not ignored but it's off, ignore it anyway
             if event.hasOffState {
+                return false
+            }
+            
+            // Wait for a deliberate push; the event is read once it passes the threshold.
+            if event.type == .axis && event.absoluteValue < Self.axisBindingThreshold {
+                return false
+            }
+            
+            // A stick that was just released may still be bouncing; ignore it
+            // until it settles back to its null state.
+            if event.type == .axis && ProcessInfo.processInfo.systemUptime < axisSettleDeadline {
+                ignoredEvents.insert(.init(event))
                 return false
             }
             
